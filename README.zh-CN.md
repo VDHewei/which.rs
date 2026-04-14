@@ -1,4 +1,4 @@
-# Which-rs
+# Which
 
 一个跨平台的 Rust 实现 `which` 命令行工具，兼容 Windows、Linux 和 macOS。
 
@@ -16,18 +16,18 @@
 ### 从 Crates.io 安装
 
 ```bash
-cargo install which-rs
+cargo install rust-which
 ```
 
 ### 从源码安装
 
 ```bash
-git clone https://github.com/yourusername/which-rs.git
-cd which-rs
+git clone https://github.com/yourusername/rust-which.git
+cd rust-which
 cargo build --release
 ```
 
-二进制文件将位于 `target/release/which`（Windows 上为 `which.exe`）。
+二进制文件将位于 `target/release/rust-which`（Windows 上为 `rust-which.exe`）。
 
 ## 使用方法
 
@@ -112,7 +112,6 @@ which --version
 - 包名和版本
 - Git 提交哈希（如果从 git 仓库构建）
 - Git 分支名（如果从 git 仓库构建）
-- 构建日期
 
 ## 命令行选项
 
@@ -180,8 +179,8 @@ $ which nonexistent || echo "命令未找到"
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/which-rs.git
-cd which-rs
+git clone https://github.com/yourusername/rust-which.git
+cd rust-which
 
 # 构建项目
 cargo build --release
@@ -193,13 +192,9 @@ cargo test
 cargo install --path .
 ```
 
-### 使用 Git 信息构建
+### Git 信息
 
-如果项目是 Git 仓库，构建脚本会自动收集 Git 信息（提交哈希、分支）：
-
-```bash
-cargo build --features git
-```
+如果项目是 Git 仓库，构建脚本会自动收集 Git 信息（提交哈希、分支）。无需特殊构建标志。
 
 ## 平台特定行为
 

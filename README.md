@@ -1,4 +1,4 @@
-# Which-rs
+# Which
 
 A cross-platform Rust implementation of the `which` command-line utility, compatible with Windows, Linux, and macOS.
 
@@ -16,18 +16,18 @@ A cross-platform Rust implementation of the `which` command-line utility, compat
 ### From Crates.io
 
 ```bash
-cargo install which-rs
+cargo install rust-which
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/which-rs.git
-cd which-rs
+git clone https://github.com/yourusername/rust-which.git
+cd rust-which
 cargo build --release
 ```
 
-The binary will be available at `target/release/which` (or `which.exe` on Windows).
+The binary will be available at `target/release/rust-which` (or `rust-which.exe` on Windows).
 
 ## Usage
 
@@ -112,7 +112,6 @@ This will display version information including:
 - Package name and version
 - Git commit hash (if built from git repository)
 - Git branch name (if built from git repository)
-- Build date
 
 ## Command-Line Options
 
@@ -180,8 +179,8 @@ Command not found
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/which-rs.git
-cd which-rs
+git clone https://github.com/yourusername/rust-which.git
+cd rust-which
 
 # Build the project
 cargo build --release
@@ -193,13 +192,9 @@ cargo test
 cargo install --path .
 ```
 
-### Build with Git Information
+### Git Information
 
-The build script automatically collects Git information (commit hash, branch) if the project is a Git repository:
-
-```bash
-cargo build --features git
-```
+The build script automatically collects Git information (commit hash, branch) if the project is a Git repository. No special build flags are required.
 
 ## Platform-Specific Behavior
 

@@ -1,13 +1,17 @@
 [package]
-name = "which"
+name = "rust-which"
 version = "0.1.0"
 edition = "2024"
 authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation of the 'which' command-line utility"
 license = "MIT"
-repository = "https://github.com/yourusername/which-rs"
+repository = "https://github.com/yourusername/rust-which"
 keywords = ["which", "cli", "command-line", "utility"]
 categories = ["command-line-utilities"]
+
+[[bin]]
+name = "which"
+path = "src/main.rs"
 
 [features]
 default = []
