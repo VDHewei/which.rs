@@ -22,7 +22,7 @@ cargo install rust-which
 ### 从源码安装
 
 ```bash
-git clone https://github.com/yourusername/rust-which.git
+git clone https://github.com/VDHewei/which.rs
 cd rust-which
 cargo build --release
 ```
@@ -179,7 +179,7 @@ $ which nonexistent || echo "命令未找到"
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/rust-which.git
+git clone https://github.com/VDHewei/which.rs
 cd rust-which
 
 # 构建项目

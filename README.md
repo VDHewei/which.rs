@@ -22,7 +22,7 @@ cargo install rust-which
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/rust-which.git
+git clone https://github.com/VDHewei/which.rs
 cd rust-which
 cargo build --release
 ```
@@ -179,7 +179,7 @@ Command not found
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rust-which.git
+git clone https://github.com/VDHewei/which.rs
 cd rust-which
 
 # Build the project
