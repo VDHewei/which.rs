@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Your Name <your.email@example.com>"]
 description = "A Rust implementation of the 'which' command-line utility"
 license = "MIT"
-repository = "https://github.com/yourusername/rust-which"
+repository = "https://github.com/VDHewei/which.rs"
 keywords = ["which", "cli", "command-line", "utility"]
 categories = ["command-line-utilities"]
 
