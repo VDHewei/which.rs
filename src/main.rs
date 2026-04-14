@@ -55,7 +55,12 @@ impl WhichResult {
     fn new(command: &str, paths: Vec<std::path::PathBuf>) -> Self {
         let found = !paths.is_empty();
         let path_strings: Vec<String> = paths.iter()
-            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .filter_map(|p| {
+                // On Windows, canonicalize() returns paths with \\?\ prefix
+                // Remove it for cleaner output
+                let path_str = p.to_str()?;
+                Some(path_str.replace(r"\\?\", ""))
+            })
             .collect();
         
         Self {
