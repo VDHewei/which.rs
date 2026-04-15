@@ -87,7 +87,7 @@ struct Args {
     format: String,
 
     /// Show version information
-    #[arg(long = "version")]
+    #[arg(long = "version",short='V')]
     version: bool,
 
     /// Command to locate
