@@ -138,10 +138,10 @@ impl VersionInfo {
 
     fn display(&self) -> String {
         let mut info = format!("{} {}", self.name, self.version);
-        if let Some(commit) = &self.git_commit {
+        if let Some(commit) = &self.git_commit && commit!="VERGEN_IDEMPOTENT_OUTPUT" {
             info.push_str(&format!(" (commit: {})", commit));
         }
-        if let Some(branch) = &self.git_branch {
+        if let Some(branch) = &self.git_branch && branch != "VERGEN_IDEMPOTENT_OUTPUT" {
             info.push_str(&format!(" (branch: {})", branch));
         }
         if let Some(date) = &self.build_date {
