@@ -30,7 +30,7 @@ cd rust-which
 cargo build --release
 ```
 
-二进制文件将位于 `target/release/rust-which`（Windows 上为 `rust-which.exe`）。
+二进制文件将位于 `target/release/which`（Windows 上为 `which.exe`）。
 
 ## 使用方法
 

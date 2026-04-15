@@ -30,7 +30,7 @@ cd rust-which
 cargo build --release
 ```
 
-The binary will be available at `target/release/rust-which` (or `rust-which.exe` on Windows).
+The binary will be available at `target/release/which` (or `which.exe` on Windows).
 
 ## Usage
 
