@@ -10,6 +10,9 @@
 - 🔧 兼容 GNU which 命令行选项
 - 📦 使用 Rust 构建，安全高效
 - 🎯 Git 集成支持版本追踪
+- 🌐 **WebAssembly 支持**：可编译为 WebAssembly 以在浏览器环境中使用
+- 💾 **虚拟文件系统支持**：在内存中的虚拟文件系统进行搜索
+- ⚡ 并发搜索：使用并行处理实现更快的搜索
 
 ## 安装
 
@@ -241,12 +244,119 @@ cargo test -- --nocapture
 
 MIT License - 详见 LICENSE 文件
 
+## 高级功能
+
+### 虚拟文件系统支持
+
+本库支持在虚拟（内存中）文件系统中搜索，这对于测试和需要模拟文件系统操作的场景非常有用。
+
+```rust
+use std::collections::HashMap;
+use which::core::core::which_fs;
+use which::core::filesystem::VirtualFileSystem;
+
+fn main() -> anyhow::Result<()> {
+    // 创建虚拟文件系统
+    let vfs = VirtualFileSystem::new();
+    
+    // 添加虚拟文件
+    vfs.add_files(vec![
+        ("/usr/bin/myapp", true),
+        ("/bin/myapp", true),
+    ]);
+    
+    // 在虚拟文件系统中搜索
+    let options = HashMap::new();
+    let path_var = "/usr/bin:/bin";
+    let path = which_fs("myapp", &options, &vfs, path_var)?;
+    
+    println!("找到于: {}", path.display());
+    Ok(())
+}
+```
+
+运行虚拟文件系统示例：
+
+```bash
+cargo run --example virtual_fs
+```
+
+### WebAssembly 支持
+
+本库可以编译为 WebAssembly，以便在浏览器环境中使用。
+
+编译为 WebAssembly：
+
+```bash
+# 如果尚未安装 wasm-pack，请先安装
+cargo install wasm-pack
+
+# 构建 wasm 包
+wasm-pack build --dev
+
+# 或构建 wasm 示例
+cargo build --target wasm32-unknown-unknown --example wasm --features wasm
+```
+
+在 JavaScript 中使用：
+
+```javascript
+import init, { find_command, find_all_commands } from './pkg/which.js';
+
+async function main() {
+    await init();
+    
+    // 查找单个命令
+    const result = find_command("node", "/usr/local/bin:/usr/bin", false);
+    console.log(result.found, result.paths);
+    
+    // 查找所有匹配项
+    const allResults = find_all_commands("python", "/usr/bin:/usr/local/bin", true);
+    console.log(allResults.found, allResults.paths);
+}
+
+main();
+```
+
+### 库 API
+
+你也可以将此库作为 Rust 依赖使用：
+
+```toml
+[dependencies]
+rust-which = "0.1"
+```
+
+```rust
+use which::{which_all, which_fs};
+use which::core::filesystem::VirtualFileSystem;
+use std::collections::HashMap;
+
+fn main() -> anyhow::Result<()> {
+    // 在本地文件系统中搜索
+    let options = HashMap::new();
+    let paths = which_all("rustc", &options)?;
+    for path in paths {
+        println!("{}", path.display());
+    }
+    
+    // 或在虚拟文件系统中搜索
+    let vfs = VirtualFileSystem::new();
+    vfs.add_file("/usr/bin/myapp", true);
+    let path = which_fs("myapp", &options, &vfs, "/usr/bin")?;
+    println!("{}", path.display());
+    
+    Ok(())
+}
+```
+
 ## 致谢
 
 - 灵感来源于 GNU `which` 命令
 - 使用 [Rust](https://www.rust-lang.org/) 构建
 - 使用 [clap](https://github.com/clap-rs/clap) 进行命令行解析
 - 使用 [serde](https://serde.rs/) 进行 JSON/XML 序列化
+- 使用 [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) 实现 WebAssembly 支持
 
 ## 依赖说明
 ```

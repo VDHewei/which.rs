@@ -10,6 +10,9 @@ A cross-platform Rust implementation of the `which` command-line utility, compat
 - 🔧 Compatible with GNU which command-line options
 - 📦 Built with Rust for safety and performance
 - 🎯 Git integration for version tracking
+- 🌐 **WebAssembly support**: Can be compiled to WebAssembly for browser environments
+- 💾 **Virtual filesystem support**: Search in in-memory virtual filesystems
+- ⚡ Concurrent search: Uses parallel processing for faster searches
 
 ## Installation
 
@@ -241,9 +244,116 @@ cargo test -- --nocapture
 
 MIT License - see LICENSE file for details
 
+## Advanced Features
+
+### Virtual Filesystem Support
+
+This library supports searching in virtual (in-memory) filesystems, which is useful for testing and scenarios where you need to simulate filesystem operations.
+
+```rust
+use std::collections::HashMap;
+use which::core::core::which_fs;
+use which::core::filesystem::VirtualFileSystem;
+
+fn main() -> anyhow::Result<()> {
+    // Create a virtual filesystem
+    let vfs = VirtualFileSystem::new();
+    
+    // Add virtual files
+    vfs.add_files(vec![
+        ("/usr/bin/myapp", true),
+        ("/bin/myapp", true),
+    ]);
+    
+    // Search in virtual filesystem
+    let options = HashMap::new();
+    let path_var = "/usr/bin:/bin";
+    let path = which_fs("myapp", &options, &vfs, path_var)?;
+    
+    println!("Found at: {}", path.display());
+    Ok(())
+}
+```
+
+Run the virtual filesystem example:
+
+```bash
+cargo run --example virtual_fs
+```
+
+### WebAssembly Support
+
+The library can be compiled to WebAssembly for use in browser environments.
+
+Build for WebAssembly:
+
+```bash
+# Install wasm-pack if you haven't already
+cargo install wasm-pack
+
+# Build the wasm package
+wasm-pack build --dev
+
+# Or build the wasm example
+cargo build --target wasm32-unknown-unknown --example wasm --features wasm
+```
+
+Usage in JavaScript:
+
+```javascript
+import init, { find_command, find_all_commands } from './pkg/which.js';
+
+async function main() {
+    await init();
+    
+    // Find a single command
+    const result = find_command("node", "/usr/local/bin:/usr/bin", false);
+    console.log(result.found, result.paths);
+    
+    // Find all matches
+    const allResults = find_all_commands("python", "/usr/bin:/usr/local/bin", true);
+    console.log(allResults.found, allResults.paths);
+}
+
+main();
+```
+
+### Library API
+
+You can also use this library as a Rust dependency:
+
+```toml
+[dependencies]
+rust-which = "0.1"
+```
+
+```rust
+use which::{which_all, which_fs};
+use which::core::filesystem::VirtualFileSystem;
+use std::collections::HashMap;
+
+fn main() -> anyhow::Result<()> {
+    // Search in native filesystem
+    let options = HashMap::new();
+    let paths = which_all("rustc", &options)?;
+    for path in paths {
+        println!("{}", path.display());
+    }
+    
+    // Or search in virtual filesystem
+    let vfs = VirtualFileSystem::new();
+    vfs.add_file("/usr/bin/myapp", true);
+    let path = which_fs("myapp", &options, &vfs, "/usr/bin")?;
+    println!("{}", path.display());
+    
+    Ok(())
+}
+```
+
 ## Acknowledgments
 
 - Inspired by the GNU `which` command
 - Built with [Rust](https://www.rust-lang.org/)
 - Uses [clap](https://github.com/clap-rs/clap) for command-line parsing
 - Uses [serde](https://serde.rs/) for JSON/XML serialization
+- Uses [wasm-bindgen](https://github.com/rustwasm/wasm-bindgen) for WebAssembly support

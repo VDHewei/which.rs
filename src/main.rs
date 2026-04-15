@@ -2,10 +2,9 @@ mod core;
 
 use anyhow::Result;
 use clap::Parser;
-use core::core::{which_all};
+use core::core::which_all;
 use std::collections::HashMap;
 use serde::Serialize;
-use std::env;
 
 /// Which version information
 #[derive(Debug, Serialize)]
@@ -69,6 +68,7 @@ impl WhichResult {
             found,
         }
     }
+
 }
 
 /// A Rust implementation of the 'which' command-line utility
@@ -94,6 +94,44 @@ struct Args {
     command: Vec<String>,
 }
 
+impl Args {
+    pub(crate) fn output(&self, all_results: &[WhichResult]) -> Result<()> {
+        match self.format.as_str() {
+            "json" => {
+                if all_results.len() == 1 {
+                    println!("{}", serde_json::to_string_pretty(&all_results[0])?);
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&all_results)?);
+                }
+            }
+            "xml" => {
+                if all_results.len() == 1 {
+                    println!("{}", quick_xml::se::to_string(&all_results[0])?);
+                } else {
+                    println!("<results>");
+                    for result in all_results {
+                        println!("{}", quick_xml::se::to_string(result)?);
+                    }
+                    println!("</results>");
+                }
+            }
+            "text" => {
+                for result in all_results {
+                    if result.found {
+                        for path in &result.paths {
+                            println!("{}", path);
+                        }
+                    }
+                }
+            }
+            _ => {
+                anyhow::bail!("unsupported format: {}. Use 'text', 'json', or 'xml'", self.format);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Run the which command with given arguments
 fn run(args: Args) -> Result<()> {
     // Show version and exit if requested
@@ -111,7 +149,6 @@ fn run(args: Args) -> Result<()> {
     // Prepare options
     let mut options = HashMap::new();
     options.insert("all".to_string(), args.all);
-    options.insert("-a".to_string(), args.all);
 
     // Process each command
     let mut all_results = Vec::new();
@@ -135,41 +172,11 @@ fn run(args: Args) -> Result<()> {
     }
 
     // Output results in the requested format
-    match args.format.as_str() {
-        "json" => {
-            if all_results.len() == 1 {
-                println!("{}", serde_json::to_string_pretty(&all_results[0])?);
-            } else {
-                println!("{}", serde_json::to_string_pretty(&all_results)?);
-            }
-        }
-        "xml" => {
-            if all_results.len() == 1 {
-                println!("{}", quick_xml::se::to_string(&all_results[0])?);
-            } else {
-                println!("<results>");
-                for result in &all_results {
-                    println!("{}", quick_xml::se::to_string(result)?);
-                }
-                println!("</results>");
-            }
-        }
-        "text" => {
-            for result in &all_results {
-                if result.found {
-                    for path in &result.paths {
-                        println!("{}", path);
-                    }
-                }
-            }
-        }
-        _ => {
-            anyhow::bail!("unsupported format: {}. Use 'text', 'json', or 'xml'", args.format);
-        }
-    }
+    args.output(&all_results)?;
 
     Ok(())
 }
+
 #[warn(dead_code)]
 fn main() {
     let args = Args::parse();
