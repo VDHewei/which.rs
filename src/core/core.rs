@@ -4,10 +4,11 @@ use crate::core::filesystem::NativeFileSystem;
 #[cfg(target_os = "windows")]
 use crate::core::filesystem::get_executable_extensions;
 use anyhow::{Error, anyhow};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 
 /// 检查选项是否存在于 options 中且值为期望值
 fn check_option(options: &HashMap<String, bool>, keys: Vec<&str>, expected: bool) -> bool {
@@ -19,17 +20,18 @@ fn check_option(options: &HashMap<String, bool>, keys: Vec<&str>, expected: bool
     false
 }
 
-/// 检查目录下的命令（Windows 特殊处理）
-fn check_dir<F: FileSystem>(
-    result: &Mutex<Vec<PathBuf>>,
+/// 检查目录下的命令（带 level 信息，用于并发优化）
+fn check_dir_with_level<F: FileSystem>(
+    result: &Mutex<HashMap<String, (PathBuf, usize)>>,
     fs: &F,
     cmd: &str,
     dir_path: &Path,
+    level: usize,
 ) {
     #[cfg(not(target_os = "windows"))]
     {
         let candidate = dir_path.join(cmd);
-        try_add_path(result, fs, &candidate);
+        try_add_path_with_level(result, fs, &candidate, level);
     }
 
     #[cfg(target_os = "windows")]
@@ -39,20 +41,89 @@ fn check_dir<F: FileSystem>(
         // 尝试所有常见的扩展名
         for ext in &extensions {
             let candidate_ext = dir_path.join(format!("{}{}", cmd, ext));
-            try_add_path(result, fs, &candidate_ext);
+            try_add_path_with_level(result, fs, &candidate_ext, level);
         }
     }
 }
 
-/// 尝试添加文件路径到结果列表（去重）
-fn try_add_path(result: &Mutex<Vec<PathBuf>>, fs: &dyn FileSystem, candidate: &Path) {
+/// 检查目录下的命令（带 level 信息，用于并发优化，找到后立即停止）
+fn check_dir_with_level_and_stop<F: FileSystem>(
+    result: &Mutex<HashMap<String, (PathBuf, usize)>>,
+    fs: &F,
+    cmd: &str,
+    dir_path: &Path,
+    level: usize,
+    found: &AtomicBool,
+) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let candidate = dir_path.join(cmd);
+        try_add_path_with_level_and_stop(result, fs, &candidate, level, found);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let extensions = get_executable_extensions();
+
+        // 尝试所有常见的扩展名
+        for ext in &extensions {
+            let candidate_ext = dir_path.join(format!("{}{}", cmd, ext));
+            try_add_path_with_level_and_stop(result, fs, &candidate_ext, level, found);
+        }
+    }
+}
+
+/// 尝试添加文件路径到结果列表（带 level 信息，用于并发优化）
+fn try_add_path_with_level<F: FileSystem>(
+    result: &Mutex<HashMap<String, (PathBuf, usize)>>,
+    fs: &F,
+    candidate: &Path,
+    level: usize,
+) {
     if fs.is_file(candidate) && fs.is_executable(candidate)
         && let Ok(canonical) = fs.canonicalize(candidate) {
+        let path_str = canonical.to_string_lossy().to_string();
         let mut results = result.lock().unwrap();
-        // 避免重复
-        if !results.iter().any(|p| p == &canonical) {
-            results.push(canonical);
-        }
+        // 避免重复，只保留最小的 level
+        results.entry(path_str)
+            .and_modify(|existing| {
+                if level < existing.1 {
+                    existing.1 = level;
+                }
+            })
+            .or_insert((canonical, level));
+    }
+}
+
+/// 尝试添加文件路径到结果列表（带 level 信息，找到后立即停止）
+fn try_add_path_with_level_and_stop<F: FileSystem>(
+    result: &Mutex<HashMap<String, (PathBuf, usize)>>,
+    fs: &F,
+    candidate: &Path,
+    level: usize,
+    found: &AtomicBool,
+) {
+    if found.load(Ordering::Relaxed) {
+        return;
+    }
+
+    if fs.is_file(candidate) && fs.is_executable(candidate)
+        && let Ok(canonical) = fs.canonicalize(candidate) {
+        let path_str = canonical.to_string_lossy().to_string();
+        let mut results = result.lock().unwrap();
+
+        // 避免重复，只保留最小的 level
+        results.entry(path_str)
+            .and_modify(|existing| {
+                if level < existing.1 {
+                    existing.1 = level;
+                    found.store(true, Ordering::Relaxed);
+                }
+            })
+            .or_insert((canonical, level));
+
+        // 标记已找到结果
+        found.store(true, Ordering::Relaxed);
     }
 }
 
@@ -92,33 +163,70 @@ pub fn which_all_fs<F: FileSystem>(
     let need_all = check_option(options, vec!["all", "-a"], true);
 
     // 3. 遍历 PATH 中的每个目录
-    // 使用顺序遍历保证输出顺序与 PATH 一致
-    let result: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
     let path_dirs: Vec<&str> = path_var
         .split(separator)
         .filter(|d| !d.is_empty())
         .collect();
 
-    // 顺序遍历：保证输出顺序与 PATH 一致
-    for dir in path_dirs.iter() {
-        if dir.is_empty() {
-            continue;
+    // 1. 保证输出顺序与 PATH 一致 [最重要逻辑]
+    // 2. need_all == true ,并发 遍历， 输出结果 也许保证 按 PATH 顺序排序
+    // 3. need_all == false, 并发遍历 结果只输出 PATH 顺序找到第一个
+    // 4. need_all == false 并发优化, 优先级查找 结果 Map<{Path:Level},Result>, level 安装path 排序 [越考前越值小，最小值为0]，
+    // 5.  need_all == false  并优化: 已经找到 小 level  结果，停止遍历查找，输出结果
+
+    if need_all {
+        // need_all == true: 并发遍历，输出结果保证按 PATH 顺序排序
+        // 使用 Map 存储结果：key 为路径字符串，value 为 (PathBuf, level)
+        let results_map: Mutex<HashMap<String, (PathBuf, usize)>> = Mutex::new(HashMap::new());
+
+        path_dirs.par_iter().enumerate().for_each(|(level, dir)| {
+            if dir.is_empty() {
+                return;
+            }
+
+            let dir_path = PathBuf::from(dir);
+            check_dir_with_level(&results_map, fs, cmd, &dir_path, level);
+        });
+
+        // 按 PATH 顺序排序结果
+        let final_result = results_map.into_inner()?;
+        let mut sorted_results: Vec<(PathBuf, usize)> = final_result.into_values().collect();
+        sorted_results.sort_by_key(|(_, level)| *level);
+
+        if !sorted_results.is_empty() {
+            let paths: Vec<PathBuf> = sorted_results.into_iter().map(|(path, _)| path).collect();
+            return Ok(paths);
         }
+    } else {
+        // need_all == false: 并发遍历，只返回第一个找到的结果（按 PATH 顺序）
+        // 使用 Map 存储结果：key 为路径字符串，value 为 (PathBuf, level)
+        let results_map: Mutex<HashMap<String, (PathBuf, usize)>> = Mutex::new(HashMap::new());
+        // 使用原子布尔值标记是否已找到结果
+        let found = AtomicBool::new(false);
 
-        let dir_path = PathBuf::from(dir);
-        check_dir(&result, fs, cmd, &dir_path);
+        path_dirs.par_iter().enumerate().for_each(|(level, dir)| {
+            // 如果已经找到结果，提前退出
+            if found.load(Ordering::Relaxed) {
+                return;
+            }
+
+            if dir.is_empty() {
+                return;
+            }
+
+            let dir_path = PathBuf::from(dir);
+            check_dir_with_level_and_stop(&results_map, fs, cmd, &dir_path, level, &found);
+        });
+
+        // 按 PATH 顺序排序，返回第一个结果
+        let final_result = results_map.into_inner()?;
+        if !final_result.is_empty() {
+            let mut sorted_results: Vec<(PathBuf, usize)> = final_result.into_values().collect();
+            sorted_results.sort_by_key(|(_, level)| *level);
+            return Ok(vec![sorted_results[0].0.clone()]);
+        }
     }
 
-    // 根据选项决定返回所有结果还是只返回第一个
-    let mut final_result = result.into_inner()?;
-    if !need_all && !final_result.is_empty() {
-        // 只返回第一个结果
-        return Ok(vec![final_result.swap_remove(0)]);
-    }
-
-    if !final_result.is_empty() {
-        return Ok(final_result);
-    }
     Err(anyhow!("{} not found", cmd))
 }
 

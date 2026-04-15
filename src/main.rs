@@ -7,6 +7,79 @@ use std::collections::HashMap;
 use std::time::Duration;
 use serde::Serialize;
 
+/// Format XML string with proper indentation
+fn format_xml(xml: &str, base_indent: usize) -> String {
+    let mut result = String::new();
+    let mut indent_level: usize = 0;
+    let mut current_tag = String::new();
+    let mut chars = xml.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                // Start of a tag
+                current_tag.push(c);
+                let next_char = chars.peek();
+                if let Some(&'/') = next_char {
+                    // Closing tag, decrease indent before processing
+                    indent_level = indent_level.saturating_sub(1);
+                }
+            }
+            '>' => {
+                // End of a tag
+                current_tag.push(c);
+
+                // Check if it's a self-closing tag
+                let is_self_closing = current_tag.contains("/>") || current_tag.trim_start_matches('<').starts_with("?");
+                let is_closing_tag = current_tag.contains("</");
+
+                // Add indentation before the tag
+                if !result.is_empty() && !result.ends_with('\n') {
+                    result.push('\n');
+                }
+                result.push_str(&" ".repeat(indent_level * 2 + base_indent));
+
+                // Add the tag
+                result.push_str(&current_tag);
+
+                // Reset current tag
+                current_tag.clear();
+
+                // If it's an opening tag (not closing or self-closing), increase indent
+                if !is_closing_tag && !is_self_closing {
+                    indent_level += 1;
+                }
+
+                // Check if next character is not '<', meaning there's content
+                if let Some(&next_c) = chars.peek() && next_c != '<' {
+                    // Collect content
+                    let mut content = String::new();
+                    while let Some(&next_c) = chars.peek() {
+                        if next_c == '<' {
+                            break;
+                        }
+                        content.push(chars.next().unwrap());
+                    }
+
+                    // Add content with proper indentation
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        result.push('\n');
+                        result.push_str(&" ".repeat((indent_level) * 2 + base_indent));
+                        result.push_str(trimmed);
+                        indent_level = indent_level.saturating_sub(1);
+                    }
+                }
+            }
+            _ => {
+                current_tag.push(c);
+            }
+        }
+    }
+
+    result.trim().to_string()
+}
+
 /// Format duration into human-readable string
 fn format_duration(duration: Duration) -> String {
     let millis = duration.as_millis();
@@ -148,11 +221,15 @@ impl Args {
             }
             "xml" => {
                 if all_results.len() == 1 {
-                    println!("{}", quick_xml::se::to_string(&all_results[0])?);
+                    let xml = quick_xml::se::to_string(&all_results[0])?;
+                    let formatted = format_xml(&xml, 0);
+                    println!("{}", formatted);
                 } else {
                     println!("<results>");
                     for result in all_results {
-                        println!("{}", quick_xml::se::to_string(result)?);
+                        let xml = quick_xml::se::to_string(result)?;
+                        let formatted = format_xml(&xml, 2);
+                        println!("{}", formatted);
                     }
                     println!("</results>");
                 }
@@ -343,5 +420,14 @@ mod tests {
         assert_eq!(result.paths.len(), 1);
         assert!(result.found);
         assert_eq!(result.elapsed_time, Some("10ms".to_string()));
+    }
+
+    #[test]
+    fn test_format_xml_simple() {
+        let xml = "<WhichResult><command>test</command><found>true</found></WhichResult>";
+        let formatted = format_xml(xml, 0);
+        assert!(formatted.contains("<command>"));
+        assert!(formatted.contains("test"));
+        assert!(formatted.contains("</command>"));
     }
 }
