@@ -1,7 +1,7 @@
 mod core;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, CommandFactory};
 use core::core::which_all;
 use std::collections::HashMap;
 use serde::Serialize;
@@ -75,7 +75,7 @@ impl WhichResult {
 #[derive(Parser, Debug)]
 #[command(name = "which")]
 #[command(author = env!("CARGO_PKG_AUTHORS"))]
-#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(version = env!("CARGO_PKG_VERSION"), disable_version_flag = true)]
 #[command(about = "Locate a command", long_about = None)]
 struct Args {
     /// Show all matches in PATH, not just the first
@@ -143,7 +143,9 @@ fn run(args: Args) -> Result<()> {
 
     // Require at least one command
     if args.command.is_empty() {
-        anyhow::bail!("missing operand: please provide at least one command to locate");
+        // 调用 help
+        Args::command().print_help().ok();
+        std::process::exit(0);
     }
 
     // Prepare options
