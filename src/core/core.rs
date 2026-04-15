@@ -20,6 +20,31 @@ fn check_option(options: &HashMap<String, bool>, keys: Vec<&str>, expected: bool
     false
 }
 
+/// 检查目录下的命令（Windows 特殊处理）
+fn check_dir<F: FileSystem>(
+    result: &Mutex<Vec<PathBuf>>,
+    fs: &F,
+    cmd: &str,
+    dir_path: &Path,
+) {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let candidate = dir_path.join(cmd);
+        try_add_path(result, fs, &candidate);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let extensions = get_executable_extensions();
+
+        // 尝试所有常见的扩展名
+        for ext in &extensions {
+            let candidate_ext = dir_path.join(format!("{}{}", cmd, ext));
+            try_add_path(result, fs, &candidate_ext);
+        }
+    }
+}
+
 /// 尝试添加文件路径到结果列表（去重）
 fn try_add_path(result: &Mutex<Vec<PathBuf>>, fs: &dyn FileSystem, candidate: &Path) {
     if fs.is_file(candidate) && fs.is_executable(candidate)
@@ -67,40 +92,37 @@ pub fn which_all_fs<F: FileSystem>(
     let separator = if cfg!(windows) { ';' } else { ':' };
     let need_all = check_option(options, vec!["all", "-a"], true);
 
-    // 3. 并发遍历 PATH 中的每个目录
+    // 3. 遍历 PATH 中的每个目录
+    // 如果需要所有结果（-a 选项），使用顺序遍历保证输出顺序一致
+    // 否则使用并发遍历提高性能
     let result: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
     let path_dirs: Vec<&str> = path_var
         .split(separator)
         .filter(|d| !d.is_empty())
         .collect();
 
-    path_dirs.par_iter().for_each(|dir| {
-        // 跳过空目录
-        if dir.is_empty() {
-            return;
-        }
-
-        let dir_path = PathBuf::from(dir);
-
-        // 4. 检查文件是否存在且可执行
-        #[cfg(not(target_os = "windows"))]
-        {
-            let candidate = dir_path.join(cmd);
-            try_add_path(&result, fs, &candidate);
-        }
-
-        // 5. Windows 特殊处理：检查可执行扩展名
-        #[cfg(target_os = "windows")]
-        {
-            let extensions = get_executable_extensions();
-
-            // 尝试所有常见的扩展名
-            for ext in &extensions {
-                let candidate_ext = dir_path.join(format!("{}{}", cmd, ext));
-                try_add_path(&result, fs, &candidate_ext);
+    if need_all {
+        // 顺序遍历：保证输出顺序与 PATH 一致
+        for dir in path_dirs.iter() {
+            if dir.is_empty() {
+                continue;
             }
+
+            let dir_path = PathBuf::from(dir);
+            check_dir(&result, fs, cmd, &dir_path);
         }
-    });
+    } else {
+        // 并发遍历：提高查找速度
+        path_dirs.par_iter().for_each(|dir| {
+            // 跳过空目录
+            if dir.is_empty() {
+                return;
+            }
+
+            let dir_path = PathBuf::from(dir);
+            check_dir(&result, fs, cmd, &dir_path);
+        });
+    }
 
     // 根据选项决定返回所有结果还是只返回第一个
     let mut final_result = result.into_inner()?;
@@ -216,9 +238,9 @@ mod tests {
         let result = which_all(test_cmd, &options);
 
         // 在 CI 环境中可能找不到这些路径，所以只检查错误类型
-        if result.is_err() {
+        if let Err(e) = result {
             // 路径不存在是可能的
-            assert!(result.unwrap_err().to_string().contains("not found"));
+            assert!(e.to_string().contains("not found"));
         }
     }
 
