@@ -32,6 +32,8 @@ quick-xml = { version = "0.39.2", features = ["serialize"] }
 rayon = "1.10"
 wasm-bindgen = { version = "0.2", optional = true }
 js-sys = { version = "0.3", optional = true }
+regex = "1.11"
+atty = "0.2"
 
 [build-dependencies]
 vergen-gitcl = { version = "9.1.0", features = ["build", "cargo", "rustc", "si"] }

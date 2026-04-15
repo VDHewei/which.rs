@@ -60,6 +60,60 @@ which python node git
 
 This will locate multiple commands at once.
 
+### Use Regular Expressions
+
+```bash
+which --regex '^py'
+```
+
+This will find all commands that start with 'py' in your PATH.
+
+### Measure Search Time
+
+```bash
+which -t python
+# or
+which --time python
+```
+
+This will display the time elapsed for the search operation.
+
+### Skip Tilde Directories
+
+```bash
+which --skip-tilde mycmd
+```
+
+This will skip directories in PATH that start with a tilde (like `~/bin`).
+
+### Output Tilde for Home Directory
+
+```bash
+which --show-tilde python
+```
+
+On Unix systems, this will replace the HOME directory path with `~` in the output. For example, `/home/user/bin/python` will be displayed as `~/bin/python`.
+
+### Output Formats
+
+### Skip Hidden Directories
+
+```bash
+which --skip-dot mycmd
+```
+
+This will skip directories in PATH that start with a dot (like `/home/user/.local/bin`).
+
+### Show All Matches
+
+```bash
+which -a python
+# or
+which --all python
+```
+
+This will print all matching executables in your PATH, not just the first one.
+
 ### Output Formats
 
 #### Text (default)
@@ -122,8 +176,15 @@ This will display version information including:
 |--------|-------|-------------|
 | `--all` | `-a` | Show all matches in PATH |
 | `--format` | `-f` | Output format: text, json, or xml |
-| `--version` | | Show version information |
+| `--version` | `-V` | Show version information |
 | `--help` | `-h` | Display help message |
+| `--skip-dot` | | Skip directories in PATH that start with a dot |
+| `--skip-tilde` | | Skip directories in PATH that start with a tilde |
+| `--show-dot` | | Don't expand a dot to current directory in output |
+| `--show-tilde` | | Output a tilde for HOME directory for non-root |
+| `--tty-only` | | Stop processing options on the right if not on tty |
+| `--regex` | | Use regex pattern to match commands |
+| `--time` | `-t` | Show time elapsed for the search |
 
 ## Examples
 

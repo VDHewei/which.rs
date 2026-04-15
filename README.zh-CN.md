@@ -60,6 +60,48 @@ which python node git
 
 这将同时定位多个命令。
 
+### 使用正则表达式
+
+```bash
+which --regex '^py'
+```
+
+这将查找 PATH 中所有以 'py' 开头的命令。
+
+### 测量搜索时间
+
+```bash
+which -t python
+# 或
+which --time python
+```
+
+这将显示搜索操作所花费的时间。
+
+### 跳过波浪号目录
+
+```bash
+which --skip-tilde mycmd
+```
+
+这将跳过 PATH 中以波浪号开头的目录（如 `~/bin`）。
+
+### 跳过隐藏目录
+
+```bash
+which --skip-dot mycmd
+```
+
+这将跳过 PATH 中以点开头的目录（如 `/home/user/.local/bin`）。
+
+### 输出波浪号表示主目录
+
+```bash
+which --show-tilde python
+```
+
+在 Unix 系统上，这将在输出中用 `~` 替换主目录路径。例如，`/home/user/bin/python` 将显示为 `~/bin/python`。
+
 ### 输出格式
 
 #### 文本格式（默认）
@@ -122,8 +164,15 @@ which --version
 |------|------|------|
 | `--all` | `-a` | 显示 PATH 中所有匹配项 |
 | `--format` | `-f` | 输出格式：text、json 或 xml |
-| `--version` | | 显示版本信息 |
+| `--version` | `-V` | 显示版本信息 |
 | `--help` | `-h` | 显示帮助信息 |
+| `--skip-dot` | | 跳过 PATH 中以点开头的目录 |
+| `--skip-tilde` | | 跳过 PATH 中以波浪号开头的目录 |
+| `--show-dot` | | 不将点展开为当前目录 |
+| `--show-tilde` | | 为非 root 用户的 HOME 目录输出波浪号 |
+| `--tty-only` | | 如果不在 tty 上，停止处理右侧选项 |
+| `--regex` | | 使用正则表达式匹配命令 |
+| `--time` | `-t` | 显示搜索耗时 |
 
 ## 示例
 

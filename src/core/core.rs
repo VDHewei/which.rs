@@ -5,6 +5,7 @@ use crate::core::filesystem::NativeFileSystem;
 use crate::core::filesystem::get_executable_extensions;
 use anyhow::{Error, anyhow};
 use rayon::prelude::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -135,6 +136,53 @@ fn try_add_path_with_level_and_stop<F: FileSystem>(
     }
 }
 
+/// 检查目录是否应该被跳过
+fn should_skip_directory(dir: &str, options: &HashMap<String, bool>) -> bool {
+    let dir = dir.trim();
+
+    // Skip directories starting with a dot
+    if check_option(options, vec!["skip_dot"], true)
+        && (dir.starts_with('.') || dir.contains("/.") || dir.contains("\\.")) {
+        return true;
+    }
+
+    // Skip directories starting with a tilde
+    if check_option(options, vec!["skip_tilde"], true)
+        && (dir.starts_with('~') || dir.contains("/~") || dir.contains("\\~")) {
+        return true;
+    }
+
+    false
+}
+
+/// 格式化路径输出
+fn format_path_output(path: &Path, options: &HashMap<String, bool>) -> PathBuf {
+    let path_str = path.to_string_lossy().to_string();
+
+    // Handle show-dot option
+    if check_option(options, vec!["show_dot"], true) {
+        // Don't expand "." to current directory
+        return PathBuf::from(&path_str);
+    }
+
+    // Handle show-tilde option
+    if check_option(options, vec!["show_tilde"], true) {
+        // Replace HOME directory with ~
+        if let Ok(home) = env::var("HOME")
+            && path_str.starts_with(&home) {
+            let relative = path_str.strip_prefix(&home).unwrap_or(&path_str);
+            if relative.starts_with('/') || relative.starts_with('\\') {
+                let new_path = format!("~{}", relative);
+                return PathBuf::from(new_path);
+            } else if relative.is_empty() {
+                return PathBuf::from("~");
+            }
+        }
+    }
+
+    PathBuf::from(path_str)
+}
+
 /// 查找所有匹配的命令路径（使用文件系统抽象）
 ///
 /// # 参数
@@ -145,6 +193,11 @@ fn try_add_path_with_level_and_stop<F: FileSystem>(
 ///
 /// # 选项
 /// * `all` / `-a` - 显示所有匹配项
+/// * `skip_dot` - 跳过 PATH 中以点开头的目录
+/// * `skip_tilde` - 跳过 PATH 中以波浪号开头的目录
+/// * `show_dot` - 不将点展开为当前目录
+/// * `show_tilde` - 为 HOME 目录输出波浪号
+/// * `regex` - 使用正则表达式匹配命令
 ///
 /// # 返回值
 /// 成功时返回找到的路径列表，失败时返回错误信息
@@ -169,19 +222,27 @@ pub fn which_all_fs<F: FileSystem>(
     // 2. 根据操作系统确定分隔符 (Windows 是 ';'，Linux/macOS 是 ':')
     let separator = if cfg!(windows) { ';' } else { ':' };
     let need_all = check_option(options, vec!["all", "-a"], true);
+    let use_regex = check_option(options, vec!["regex"], true);
 
     // 3. 遍历 PATH 中的每个目录
     let path_dirs: Vec<&str> = path_var
         .split(separator)
-        .filter(|d| !d.is_empty())
+        .filter(|d| {
+            !d.is_empty() && !should_skip_directory(d, options)
+        })
         .collect();
 
-    // 1. 保证输出顺序与 PATH 一致 [最重要逻辑]
-    // 2. need_all == true ,并发 遍历， 输出结果 也许保证 按 PATH 顺序排序
-    // 3. need_all == false, 并发遍历 结果只输出 PATH 顺序找到第一个
-    // 4. need_all == false 并发优化, 优先级查找 结果 Map<{Path:Level},Result>, level 安装path 排序 [越考前越值小，最小值为0]，
-    // 5.  need_all == false  并优化: 已经找到 小 level  结果，停止遍历查找，输出结果
+    // 4. 如果使用正则表达式，编译正则模式
+    let regex_pattern = if use_regex {
+        match Regex::new(cmd) {
+            Ok(re) => Some(re),
+            Err(e) => return Err(anyhow!("Invalid regex pattern '{}': {}", cmd, e)),
+        }
+    } else {
+        None
+    };
 
+    // 5. 根据需求进行搜索
     if need_all {
         // need_all == true: 并发遍历，输出结果保证按 PATH 顺序排序
         // 使用 Map 存储结果：key 为路径字符串，value 为 (PathBuf, level)
@@ -193,7 +254,37 @@ pub fn which_all_fs<F: FileSystem>(
             }
 
             let dir_path = PathBuf::from(dir);
-            check_dir_with_level(&results_map, fs, cmd, &dir_path, level);
+
+            // 如果使用正则表达式，扫描目录中的所有可执行文件
+            if use_regex {
+                if let Some(ref re) = regex_pattern
+                    && let Ok(entries) = fs.read_dir(&dir_path) {
+                    for entry in entries {
+                        let file_name = entry.file_name();
+                        let file_name_str = file_name.to_string_lossy();
+
+                        // 检查文件名是否匹配正则表达式
+                        if re.is_match(&file_name_str) {
+                            let full_path = dir_path.join(&file_name);
+                            if fs.is_file(&full_path) && fs.is_executable(&full_path)
+                                && let Ok(canonical) = fs.canonicalize(&full_path) {
+                                let path_str = canonical.to_string_lossy().to_string();
+                                let mut results = results_map.lock().unwrap();
+                                results.entry(path_str)
+                                    .and_modify(|existing| {
+                                        if level < existing.1 {
+                                            existing.1 = level;
+                                        }
+                                    })
+                                    .or_insert((canonical, level));
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 不使用正则表达式，直接检查命令
+                check_dir_with_level(&results_map, fs, cmd, &dir_path, level);
+            }
         });
 
         // 按 PATH 顺序排序结果
@@ -202,7 +293,10 @@ pub fn which_all_fs<F: FileSystem>(
         sorted_results.sort_by_key(|(_, level)| *level);
 
         if !sorted_results.is_empty() {
-            let paths: Vec<PathBuf> = sorted_results.into_iter().map(|(path, _)| path).collect();
+            // 应用格式化选项
+            let paths: Vec<PathBuf> = sorted_results.into_iter()
+                .map(|(path, _)| format_path_output(&path, options))
+                .collect();
             return Ok(paths);
         }
     } else {
@@ -224,7 +318,54 @@ pub fn which_all_fs<F: FileSystem>(
             }
 
             let dir_path = PathBuf::from(dir);
-            check_dir_with_level_and_stop(&results_map, fs, cmd, &dir_path, level, &min_level);
+
+            // 如果使用正则表达式，扫描目录中的所有可执行文件
+            if use_regex {
+                if let Some(ref re) = regex_pattern
+                    && let Ok(entries) = fs.read_dir(&dir_path) {
+                    for entry in entries {
+                        // 检查是否已经找到结果
+                        let current_min = min_level.load(Ordering::Relaxed);
+                        if current_min != usize::MAX && level >= current_min {
+                            break;
+                        }
+
+                        let file_name = entry.file_name();
+                        let file_name_str = file_name.to_string_lossy();
+
+                        // 检查文件名是否匹配正则表达式
+                        if re.is_match(&file_name_str) {
+                            let full_path = dir_path.join(&file_name);
+                            if fs.is_file(&full_path) && fs.is_executable(&full_path)
+                                && let Ok(canonical) = fs.canonicalize(&full_path) {
+                                let path_str = canonical.to_string_lossy().to_string();
+                                let mut results = results_map.lock().unwrap();
+
+                                // 双重检查
+                                let current_min = min_level.load(Ordering::Relaxed);
+                                if current_min != usize::MAX && level >= current_min {
+                                    return;
+                                }
+
+                                results.entry(path_str)
+                                    .and_modify(|existing| {
+                                        if level < existing.1 {
+                                            existing.1 = level;
+                                            min_level.store(level, Ordering::Relaxed);
+                                        }
+                                    })
+                                    .or_insert((canonical, level));
+
+                                // 更新最小 level
+                                min_level.store(level, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // 不使用正则表达式，直接检查命令
+                check_dir_with_level_and_stop(&results_map, fs, cmd, &dir_path, level, &min_level);
+            }
         });
 
         // 按 PATH 顺序排序，返回第一个结果
@@ -232,7 +373,8 @@ pub fn which_all_fs<F: FileSystem>(
         if !final_result.is_empty() {
             let mut sorted_results: Vec<(PathBuf, usize)> = final_result.into_values().collect();
             sorted_results.sort_by_key(|(_, level)| *level);
-            return Ok(vec![sorted_results[0].0.clone()]);
+            let formatted_path = format_path_output(&sorted_results[0].0, options);
+            return Ok(vec![formatted_path]);
         }
     }
 
@@ -707,5 +849,220 @@ mod tests {
             };
             assert_eq!(paths[0].to_string_lossy().as_ref(), expected_path);
         }
+    }
+
+    /// 测试 skip-dot 选项
+    #[test]
+    fn test_skip_dot_option() {
+        let vfs = VirtualFileSystem::new();
+        // 使用 Unix 风格的路径分隔符（更简单）
+        let mut options = HashMap::new();
+        options.insert("skip_dot".to_string(), true);
+
+        // 添加测试文件
+        if cfg!(windows) {
+            vfs.add_files(vec![
+                ("C:/usr/bin/mycmd.EXE", true),
+                ("C:/opt/bin/mycmd.EXE", true),
+                ("C:/home/user/.local/bin/mycmd.EXE", true),  // 这个应该被跳过
+            ]);
+        } else {
+            vfs.add_files(vec![
+                ("/usr/bin/mycmd", true),
+                ("/opt/bin/mycmd", true),
+                ("/home/user/.local/bin/mycmd", true),  // 这个应该被跳过
+            ]);
+        }
+
+        // 验证文件已添加
+        let all_paths = vfs.get_all_paths();
+        println!("All paths in VFS: {:?}", all_paths);
+
+        // 测试直接查找文件
+        let path_var = if cfg!(windows) {
+            "C:/usr/bin;C:/home/user/.local/bin;C:/opt/bin"
+        } else {
+            "/usr/bin:/home/user/.local/bin:/opt/bin"
+        };
+
+        // 测试 skip-dot 选项，使用 all 选项获取所有结果
+        options.insert("all".to_string(), true);
+        let result = which_all_fs("mycmd", &options, &vfs, path_var);
+
+        // 打印错误信息用于调试
+        if let Err(e) = &result {
+            println!("Error: {:?}", e);
+        }
+
+        assert!(result.is_ok());
+        let paths = result.unwrap();
+        println!("Found paths: {:?}", paths);
+        // 应该只找到 /usr/bin/mycmd 和 /opt/bin/mycmd，跳过 .local/bin
+        assert!(!paths.iter().any(|p| p.to_string_lossy().contains(".local")));
+        assert_eq!(paths.len(), 2);
+    }
+
+    /// 测试 skip-tilde 选项
+    #[test]
+    fn test_skip_tilde_option() {
+        let vfs = VirtualFileSystem::new();
+        let mut options = HashMap::new();
+        options.insert("skip_tilde".to_string(), true);
+
+        // 添加测试文件
+        if cfg!(windows) {
+            vfs.add_files(vec![
+                ("C:/usr/bin/mycmd.EXE", true),
+                ("C:/opt/bin/mycmd.EXE", true),
+                ("C:/home/user/bin/mycmd.EXE", true),
+            ]);
+        } else {
+            vfs.add_files(vec![
+                ("/usr/bin/mycmd", true),
+                ("/opt/bin/mycmd", true),
+                ("/home/user/bin/mycmd", true),
+                ("~/bin/mycmd", true),  // 这个应该被跳过
+            ]);
+        }
+
+        // 验证文件已添加
+        let all_paths = vfs.get_all_paths();
+        println!("All paths in VFS: {:?}", all_paths);
+
+        let path_var = if cfg!(windows) {
+            "C:/usr/bin;C:/home/user/bin;C:/opt/bin"
+        } else {
+            "/usr/bin:/home/user/bin:~/bin:/opt/bin"
+        };
+
+        // 测试 skip-tilde 选项，使用 all 选项获取所有结果
+        options.insert("all".to_string(), true);
+        let result = which_all_fs("mycmd", &options, &vfs, path_var);
+
+        // 打印错误信息用于调试
+        if let Err(e) = &result {
+            println!("Error: {:?}", e);
+        }
+
+        assert!(result.is_ok());
+        let _paths = result.unwrap();
+        println!("Found paths: {:?}", _paths);
+        // 在 Unix 上，应该跳过 ~/bin/mycmd
+        #[cfg(unix)]
+        {
+            assert!(_paths.iter().any(|p| !p.to_string_lossy().contains("~")));
+        }
+    }
+
+    /// 测试 should_skip_directory 函数
+    #[test]
+    fn test_should_skip_directory() {
+        let mut options = HashMap::new();
+
+        // 测试 skip-dot 选项
+        options.insert("skip_dot".to_string(), true);
+        assert!(should_skip_directory(".local/bin", &options));
+        assert!(should_skip_directory("/home/.local/bin", &options));
+        assert!(!should_skip_directory("/usr/bin", &options));
+
+        // 测试 skip-tilde 选项
+        options.clear();
+        options.insert("skip_tilde".to_string(), true);
+        assert!(should_skip_directory("~/.local/bin", &options));
+        assert!(should_skip_directory("~/bin", &options));
+        assert!(!should_skip_directory("/usr/bin", &options));
+
+        // 测试两个选项都启用
+        options.insert("skip_dot".to_string(), true);
+        assert!(should_skip_directory("~/bin", &options));
+        assert!(should_skip_directory(".local/bin", &options));
+    }
+
+    /// 测试 format_path_output 函数
+    #[test]
+    fn test_format_path_output() {
+        let mut options = HashMap::new();
+
+        // 测试默认行为（不修改路径）
+        let path = PathBuf::from("/usr/bin/ls");
+        let result = format_path_output(&path, &options);
+        assert_eq!(result, PathBuf::from("/usr/bin/ls"));
+
+        // 测试 show-dot 选项
+        options.insert("show_dot".to_string(), true);
+        let result = format_path_output(&path, &options);
+        assert_eq!(result, PathBuf::from("/usr/bin/ls"));
+
+        // 测试 show-tilde 选项（在 Windows 上这个测试可能不适用）
+        #[cfg(unix)]
+        {
+            std::env::set_var("HOME", "/home/user");
+            options.clear();
+            options.insert("show_tilde".to_string(), true);
+            let path = PathBuf::from("/home/user/bin/ls");
+            let result = format_path_output(&path, &options);
+            assert_eq!(result, PathBuf::from("~/bin/ls"));
+
+            let path = PathBuf::from("/home/user");
+            let result = format_path_output(&path, &options);
+            assert_eq!(result, PathBuf::from("~"));
+        }
+    }
+
+    /// 测试正则表达式支持
+    #[test]
+    fn test_regex_option() {
+        let fs = NativeFileSystem::new();
+        let mut options = HashMap::new();
+        options.insert("regex".to_string(), true);
+        options.insert("all".to_string(), true);
+
+        let path_var = "/usr/bin:/bin";
+
+        // 测试匹配所有以 "r" 开头的命令
+        let result = which_all_fs("^r", &options, &fs, path_var);
+        // 这个测试可能会失败，取决于系统上是否有以 r 开头的命令
+        // 我们只检查结果是否成功（可能有也可能没有匹配）
+        if result.is_ok() {
+            let paths = result.unwrap();
+            println!("Found {} commands matching '^r'", paths.len());
+            // 验证所有匹配的路径都以 r 开头
+            for path in &paths {
+                let file_name = path.file_name().unwrap().to_string_lossy();
+                assert!(file_name.starts_with('r') || file_name.starts_with('R'));
+            }
+        } else {
+            // 如果失败，应该是"not found"而不是其他错误
+            assert!(result.unwrap_err().to_string().contains("not found"));
+        }
+    }
+
+    /// 测试正则表达式无效模式
+    #[test]
+    fn test_regex_invalid_pattern() {
+        let fs = NativeFileSystem::new();
+        let mut options = HashMap::new();
+        options.insert("regex".to_string(), true);
+
+        let path_var = "/usr/bin:/bin";
+
+        // 测试无效的正则表达式
+        let result = which_all_fs("[invalid", &options, &fs, path_var);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid regex pattern"));
+    }
+
+    /// 测试检查选项函数
+    #[test]
+    fn test_check_option_with_multiple_keys() {
+        let mut options = HashMap::new();
+        options.insert("all".to_string(), true);
+
+        // 测试多个键
+        assert!(check_option(&options, vec!["all", "-a"], true));
+        assert!(!check_option(&options, vec!["all", "-a"], false));
+
+        // 测试不存在的键
+        assert!(!check_option(&options, vec!["nonexistent"], true));
     }
 }

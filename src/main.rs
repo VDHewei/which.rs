@@ -187,7 +187,7 @@ impl WhichResult {
 #[command(name = "which")]
 #[command(author = env!("CARGO_PKG_AUTHORS"))]
 #[command(version = env!("CARGO_PKG_VERSION"), disable_version_flag = true)]
-#[command(about = "Locate a command", long_about = None)]
+#[command(about = "Locate a command", long_about = "Locate a command in PATH and print its full path")]
 struct Args {
     /// Show all matches in PATH, not just the first
     #[arg(short = 'a', long = "all")]
@@ -198,7 +198,7 @@ struct Args {
     format: String,
 
     /// Show version information
-    #[arg(long = "version",short='V')]
+    #[arg(long = "version", short = 'V')]
     version: bool,
 
     /// Command to locate
@@ -207,6 +207,30 @@ struct Args {
     /// Show time elapsed for the search
     #[arg(short = 't', long = "time")]
     time: bool,
+
+    /// Skip directories in PATH that start with a dot
+    #[arg(long = "skip-dot")]
+    skip_dot: bool,
+
+    /// Skip directories in PATH that start with a tilde
+    #[arg(long = "skip-tilde")]
+    skip_tilde: bool,
+
+    /// Don't expand a dot to current directory in output
+    #[arg(long = "show-dot")]
+    show_dot: bool,
+
+    /// Output a tilde for HOME directory for non-root users
+    #[arg(long = "show-tilde")]
+    show_tilde: bool,
+
+    /// Stop processing options on the right if not on tty
+    #[arg(long = "tty-only")]
+    tty_only: bool,
+
+    /// Use regex pattern to match commands
+    #[arg(long = "regex")]
+    regex: bool,
 }
 
 impl Args {
@@ -278,6 +302,17 @@ fn run(args: Args) -> Result<()> {
     // Prepare options
     let mut options = HashMap::new();
     options.insert("all".to_string(), args.all);
+    options.insert("skip_dot".to_string(), args.skip_dot);
+    options.insert("skip_tilde".to_string(), args.skip_tilde);
+    options.insert("show_dot".to_string(), args.show_dot);
+    options.insert("show_tilde".to_string(), args.show_tilde);
+    options.insert("regex".to_string(), args.regex);
+
+    // Check tty-only option
+    if args.tty_only && !atty::is(atty::Stream::Stdout) {
+        eprintln!("which: not a tty");
+        std::process::exit(1);
+    }
 
     // Process each command
     let mut all_results = Vec::new();

@@ -1,5 +1,6 @@
 use anyhow::{Error, Result};
 use std::collections::HashMap;
+use std::fs::DirEntry;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -8,19 +9,22 @@ pub trait FileSystem: Send + Sync {
     /// 检查路径是否存在
     #[allow(dead_code)]
     fn exists(&self, path: &Path) -> bool;
-    
+
     /// 检查路径是否为文件
     fn is_file(&self, path: &Path) -> bool;
-    
+
     /// 检查文件是否可执行
     fn is_executable(&self, path: &Path) -> bool;
-    
+
     /// 规范化路径
     fn canonicalize(&self, path: &Path) -> Result<PathBuf>;
-    
+
     /// 读取文件元数据
     #[allow(dead_code)]
     fn metadata(&self, path: &Path) -> Result<Metadata>;
+
+    /// 读取目录内容
+    fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>>;
 }
 
 /// 文件元数据
@@ -51,11 +55,11 @@ impl FileSystem for NativeFileSystem {
     fn exists(&self, path: &Path) -> bool {
         path.exists()
     }
-    
+
     fn is_file(&self, path: &Path) -> bool {
         path.is_file()
     }
-    
+
     fn is_executable(&self, path: &Path) -> bool {
         #[cfg(unix)]
         {
@@ -80,16 +84,22 @@ impl FileSystem for NativeFileSystem {
             false
         }
     }
-    
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         path.canonicalize().map_err(|e| Error::msg(e.to_string()))
     }
-    
+
     fn metadata(&self, path: &Path) -> Result<Metadata> {
         Ok(Metadata {
             is_file: self.is_file(path),
             is_executable: self.is_executable(path),
         })
+    }
+
+    fn read_dir(&self, path: &Path) -> Result<Vec<DirEntry>> {
+        std::fs::read_dir(path)
+            .map(|entries| entries.filter_map(|e| e.ok()).collect())
+            .map_err(|e| Error::msg(e.to_string()))
     }
 }
 
@@ -184,11 +194,11 @@ impl FileSystem for VirtualFileSystem {
         let normalized = self.normalize_path(path);
         files.contains_key(&normalized)
     }
-    
+
     fn is_file(&self, path: &Path) -> bool {
         self.exists(path)
     }
-    
+
     fn is_executable(&self, path: &Path) -> bool {
         let files = self.files.lock().unwrap();
         let normalized = self.normalize_path(path);
@@ -197,16 +207,16 @@ impl FileSystem for VirtualFileSystem {
         }
         false
     }
-    
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         let normalized = self.normalize_path(path);
         Ok(PathBuf::from(normalized))
     }
-    
+
     fn metadata(&self, path: &Path) -> Result<Metadata> {
         let files = self.files.lock().map_err(|e| Error::msg(format!("Mutex poisoned: {}", e)))?;
         let normalized = self.normalize_path(path);
-        
+
         if let Some(file) = files.get(&normalized) {
             Ok(Metadata {
                 is_file: true,
@@ -215,6 +225,12 @@ impl FileSystem for VirtualFileSystem {
         } else {
             Err(Error::msg("File not found"))
         }
+    }
+
+    fn read_dir(&self, _path: &Path) -> Result<Vec<DirEntry>> {
+        // VirtualFileSystem doesn't support read_dir with DirEntry
+        // This is mainly for testing, so we return an error
+        Err(Error::msg("VirtualFileSystem does not support read_dir"))
     }
 }
 
@@ -245,25 +261,29 @@ impl FileSystem for WasmFileSystem {
         // 实际使用时需要集成 wasm-bindgen 的 fs API
         false
     }
-    
+
     fn is_file(&self, path: &Path) -> bool {
         self.exists(path)
     }
-    
+
     fn is_executable(&self, _path: &Path) -> bool {
         // WASM 环境下可执行性的概念不太适用
         false
     }
-    
+
     fn canonicalize(&self, path: &Path) -> Result<PathBuf> {
         Ok(path.to_path_buf())
     }
-    
+
     fn metadata(&self, path: &Path) -> Result<Metadata> {
         Ok(Metadata {
             is_file: self.is_file(path),
             is_executable: false,
         })
+    }
+
+    fn read_dir(&self, _path: &Path) -> Result<Vec<DirEntry>> {
+        Err(Error::msg("WasmFileSystem does not support read_dir"))
     }
 }
 
