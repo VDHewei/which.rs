@@ -4,7 +4,6 @@ use crate::core::filesystem::NativeFileSystem;
 #[cfg(target_os = "windows")]
 use crate::core::filesystem::get_executable_extensions;
 use anyhow::{Error, anyhow};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -93,35 +92,21 @@ pub fn which_all_fs<F: FileSystem>(
     let need_all = check_option(options, vec!["all", "-a"], true);
 
     // 3. 遍历 PATH 中的每个目录
-    // 如果需要所有结果（-a 选项），使用顺序遍历保证输出顺序一致
-    // 否则使用并发遍历提高性能
+    // 使用顺序遍历保证输出顺序与 PATH 一致
     let result: Mutex<Vec<PathBuf>> = Mutex::new(vec![]);
     let path_dirs: Vec<&str> = path_var
         .split(separator)
         .filter(|d| !d.is_empty())
         .collect();
 
-    if need_all {
-        // 顺序遍历：保证输出顺序与 PATH 一致
-        for dir in path_dirs.iter() {
-            if dir.is_empty() {
-                continue;
-            }
-
-            let dir_path = PathBuf::from(dir);
-            check_dir(&result, fs, cmd, &dir_path);
+    // 顺序遍历：保证输出顺序与 PATH 一致
+    for dir in path_dirs.iter() {
+        if dir.is_empty() {
+            continue;
         }
-    } else {
-        // 并发遍历：提高查找速度
-        path_dirs.par_iter().for_each(|dir| {
-            // 跳过空目录
-            if dir.is_empty() {
-                return;
-            }
 
-            let dir_path = PathBuf::from(dir);
-            check_dir(&result, fs, cmd, &dir_path);
-        });
+        let dir_path = PathBuf::from(dir);
+        check_dir(&result, fs, cmd, &dir_path);
     }
 
     // 根据选项决定返回所有结果还是只返回第一个

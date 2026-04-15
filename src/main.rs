@@ -4,7 +4,43 @@ use anyhow::Result;
 use clap::{Parser, CommandFactory};
 use core::core::which_all;
 use std::collections::HashMap;
+use std::time::Duration;
 use serde::Serialize;
+
+/// Format duration into human-readable string
+fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    let seconds = duration.as_secs();
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+
+    if hours > 0 {
+        let remaining_minutes = minutes % 60;
+        if remaining_minutes > 0 {
+            format!("{}h {}min", hours, remaining_minutes)
+        } else {
+            format!("{}h", hours)
+        }
+    } else if minutes > 0 {
+        let remaining_seconds = seconds % 60;
+        if remaining_seconds > 0 {
+            format!("{}min {}s", minutes, remaining_seconds)
+        } else {
+            format!("{}min", minutes)
+        }
+    } else if seconds > 0 {
+        let remaining_millis = (millis % 1000) as u64;
+        if remaining_millis > 0 {
+            format!("{}s {}ms", seconds, remaining_millis)
+        } else {
+            format!("{}s", seconds)
+        }
+    } else if millis > 0 {
+        format!("{}ms", millis)
+    } else {
+        format!("{}μs", duration.as_micros())
+    }
+}
 
 /// Which version information
 #[derive(Debug, Serialize)]
@@ -48,10 +84,11 @@ struct WhichResult {
     command: String,
     paths: Vec<String>,
     found: bool,
+    elapsed_time: Option<String>,
 }
 
 impl WhichResult {
-    fn new(command: &str, paths: Vec<std::path::PathBuf>) -> Self {
+    fn new_with_time(command: &str, paths: Vec<std::path::PathBuf>, elapsed_time: Option<String>) -> Self {
         let found = !paths.is_empty();
         let path_strings: Vec<String> = paths.iter()
             .filter_map(|p| {
@@ -61,11 +98,12 @@ impl WhichResult {
                 Some(path_str.replace(r"\\?\", ""))
             })
             .collect();
-        
+
         Self {
             command: command.to_string(),
             paths: path_strings,
             found,
+            elapsed_time,
         }
     }
 
@@ -92,6 +130,10 @@ struct Args {
 
     /// Command to locate
     command: Vec<String>,
+
+    /// Show time elapsed for the search
+    #[arg(short = 't', long = "time")]
+    time: bool,
 }
 
 impl Args {
@@ -121,6 +163,14 @@ impl Args {
                         for path in &result.paths {
                             println!("{}", path);
                         }
+
+                        // Show elapsed time if -t flag is enabled
+                        if self.time && let Some(time_str) = &result.elapsed_time {
+                            println!("Time: {}", time_str);
+                        }
+                    } else if self.time && let Some(time_str) = &result.elapsed_time {
+                        // Show elapsed time for not found commands
+                        eprintln!("{} not found (Time: {})", result.command, time_str);
                     }
                 }
             }
@@ -155,20 +205,29 @@ fn run(args: Args) -> Result<()> {
     // Process each command
     let mut all_results = Vec::new();
     for cmd in &args.command {
+        let start = std::time::Instant::now();
         let result = which_all(cmd, &options);
-        
+        let elapsed = start.elapsed();
+
+        let elapsed_time_str = if args.time {
+            Some(format_duration(elapsed))
+        } else {
+            None
+        };
+
         match result {
             Ok(paths) => {
-                all_results.push(WhichResult::new(cmd, paths));
+                all_results.push(WhichResult::new_with_time(cmd, paths, elapsed_time_str));
             }
             Err(e) => {
                 // For format other than text, we still want to report not found
                 if args.format != "text" {
-                    all_results.push(WhichResult::new(cmd, vec![]));
-                } else {
-                    // Text format: print error to stderr
+                    all_results.push(WhichResult::new_with_time(cmd, vec![], elapsed_time_str));
+                } else if !args.time {
+                    // Text format without time: print error to stderr
                     eprintln!("{}: {}", cmd, e);
                 }
+                // With time option, the error message is already printed in output()
             }
         }
     }
@@ -202,10 +261,10 @@ mod tests {
 
     #[test]
     fn test_which_result_new() {
-        let result = WhichResult::new("test", vec![
+        let result = WhichResult::new_with_time("test", vec![
             std::path::PathBuf::from("/usr/bin/test"),
             std::path::PathBuf::from("/bin/test")
-        ]);
+        ], None);
         assert_eq!(result.command, "test");
         assert_eq!(result.paths.len(), 2);
         assert!(result.found);
@@ -213,9 +272,76 @@ mod tests {
 
     #[test]
     fn test_which_result_not_found() {
-        let result = WhichResult::new("nonexistent", vec![]);
+        let result = WhichResult::new_with_time("nonexistent", vec![], None);
         assert_eq!(result.command, "nonexistent");
         assert_eq!(result.paths.len(), 0);
         assert!(!result.found);
+    }
+
+    #[test]
+    fn test_format_duration_microseconds() {
+        let duration = Duration::from_micros(500);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "500μs");
+    }
+
+    #[test]
+    fn test_format_duration_milliseconds() {
+        let duration = Duration::from_millis(500);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "500ms");
+    }
+
+    #[test]
+    fn test_format_duration_seconds() {
+        let duration = Duration::from_secs(5);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "5s");
+    }
+
+    #[test]
+    fn test_format_duration_seconds_with_ms() {
+        let duration = Duration::from_millis(5500);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "5s 500ms");
+    }
+
+    #[test]
+    fn test_format_duration_minutes() {
+        let duration = Duration::from_secs(300);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "5min");
+    }
+
+    #[test]
+    fn test_format_duration_minutes_with_seconds() {
+        let duration = Duration::from_secs(330);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "5min 30s");
+    }
+
+    #[test]
+    fn test_format_duration_hours() {
+        let duration = Duration::from_secs(7200);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "2h");
+    }
+
+    #[test]
+    fn test_format_duration_hours_with_minutes() {
+        let duration = Duration::from_secs(7500);
+        let formatted = format_duration(duration);
+        assert_eq!(formatted, "2h 5min");
+    }
+
+    #[test]
+    fn test_which_result_with_time() {
+        let result = WhichResult::new_with_time("test", vec![
+            std::path::PathBuf::from("/usr/bin/test")
+        ], Some("10ms".to_string()));
+        assert_eq!(result.command, "test");
+        assert_eq!(result.paths.len(), 1);
+        assert!(result.found);
+        assert_eq!(result.elapsed_time, Some("10ms".to_string()));
     }
 }
