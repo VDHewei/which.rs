@@ -137,16 +137,37 @@ impl VirtualFileSystem {
     pub fn set_current_dir(&mut self, dir: &str) {
         self.current_dir = dir.replace('\\', "/");
     }
-    
+
+    /// 获取所有文件路径（用于调试）
+    #[allow(dead_code)]
+    pub fn get_all_paths(&self) -> Vec<String> {
+        let files = self.files.lock().unwrap();
+        files.keys().cloned().collect()
+    }
+
     /// 规范化路径（统一使用正斜杠）
     fn normalize_path(&self, path: &Path) -> String {
         let path_str = path.to_string_lossy().replace('\\', "/");
-        
-        if path.is_absolute() {
+
+        // 在 Windows 上，以 / 或 \ 开头的路径都应该被视为绝对路径
+        // 同时，如果路径包含 /，也应该被视为绝对路径（Unix 风格路径在 Windows 上）
+        let is_absolute = if cfg!(windows) {
+            path_str.starts_with('/') || path_str.starts_with('\\') || path_str.contains(':') || path_str.contains('/')
+        } else {
+            path.is_absolute() || path_str.starts_with('/')
+        };
+
+        if is_absolute {
+            // 绝对路径，直接返回规范化后的路径
             path_str
         } else {
             // 相对路径，添加当前目录
-            format!("{}/{}", self.current_dir.trim_end_matches('/'), path_str.trim_start_matches('/'))
+            let current_dir = self.current_dir.trim_end_matches('/');
+            if current_dir.is_empty() {
+                path_str.to_string()
+            } else {
+                format!("{}/{}", current_dir, path_str.trim_start_matches('/'))
+            }
         }
     }
 }

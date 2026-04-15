@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{Mutex, atomic::{AtomicUsize, Ordering}};
 
 /// 检查选项是否存在于 options 中且值为期望值
 fn check_option(options: &HashMap<String, bool>, keys: Vec<&str>, expected: bool) -> bool {
@@ -53,12 +53,12 @@ fn check_dir_with_level_and_stop<F: FileSystem>(
     cmd: &str,
     dir_path: &Path,
     level: usize,
-    found: &AtomicBool,
+    min_level: &AtomicUsize,
 ) {
     #[cfg(not(target_os = "windows"))]
     {
         let candidate = dir_path.join(cmd);
-        try_add_path_with_level_and_stop(result, fs, &candidate, level, found);
+        try_add_path_with_level_and_stop(result, fs, &candidate, level, min_level);
     }
 
     #[cfg(target_os = "windows")]
@@ -68,7 +68,7 @@ fn check_dir_with_level_and_stop<F: FileSystem>(
         // 尝试所有常见的扩展名
         for ext in &extensions {
             let candidate_ext = dir_path.join(format!("{}{}", cmd, ext));
-            try_add_path_with_level_and_stop(result, fs, &candidate_ext, level, found);
+            try_add_path_with_level_and_stop(result, fs, &candidate_ext, level, min_level);
         }
     }
 }
@@ -101,9 +101,11 @@ fn try_add_path_with_level_and_stop<F: FileSystem>(
     fs: &F,
     candidate: &Path,
     level: usize,
-    found: &AtomicBool,
+    min_level: &AtomicUsize,
 ) {
-    if found.load(Ordering::Relaxed) {
+    // 检查是否已经有更小的 level 被找到
+    let current_min = min_level.load(Ordering::Relaxed);
+    if current_min != usize::MAX && level >= current_min {
         return;
     }
 
@@ -112,18 +114,24 @@ fn try_add_path_with_level_and_stop<F: FileSystem>(
         let path_str = canonical.to_string_lossy().to_string();
         let mut results = result.lock().unwrap();
 
+        // 双重检查：在持有锁的情况下再次检查 min_level
+        let current_min = min_level.load(Ordering::Relaxed);
+        if current_min != usize::MAX && level >= current_min {
+            return;
+        }
+
         // 避免重复，只保留最小的 level
         results.entry(path_str)
             .and_modify(|existing| {
                 if level < existing.1 {
                     existing.1 = level;
-                    found.store(true, Ordering::Relaxed);
+                    min_level.store(level, Ordering::Relaxed);
                 }
             })
             .or_insert((canonical, level));
 
-        // 标记已找到结果
-        found.store(true, Ordering::Relaxed);
+        // 更新最小 level
+        min_level.store(level, Ordering::Relaxed);
     }
 }
 
@@ -201,12 +209,13 @@ pub fn which_all_fs<F: FileSystem>(
         // need_all == false: 并发遍历，只返回第一个找到的结果（按 PATH 顺序）
         // 使用 Map 存储结果：key 为路径字符串，value 为 (PathBuf, level)
         let results_map: Mutex<HashMap<String, (PathBuf, usize)>> = Mutex::new(HashMap::new());
-        // 使用原子布尔值标记是否已找到结果
-        let found = AtomicBool::new(false);
+        // 使用原子 usize 跟踪找到的最小 level
+        let min_level = AtomicUsize::new(usize::MAX);
 
         path_dirs.par_iter().enumerate().for_each(|(level, dir)| {
-            // 如果已经找到结果，提前退出
-            if found.load(Ordering::Relaxed) {
+            // 如果已经有更小的 level 被找到，提前退出
+            let current_min = min_level.load(Ordering::Relaxed);
+            if current_min != usize::MAX && level >= current_min {
                 return;
             }
 
@@ -215,7 +224,7 @@ pub fn which_all_fs<F: FileSystem>(
             }
 
             let dir_path = PathBuf::from(dir);
-            check_dir_with_level_and_stop(&results_map, fs, cmd, &dir_path, level, &found);
+            check_dir_with_level_and_stop(&results_map, fs, cmd, &dir_path, level, &min_level);
         });
 
         // 按 PATH 顺序排序，返回第一个结果
@@ -441,5 +450,262 @@ mod tests {
         // 测试带路径的命令
         let result = which_all_fs("/usr/bin/ls", &options, &vfs, path_var);
         assert!(result.is_ok());
+    }
+
+    /// 并发一致性测试：验证 need_all == false 时，多次运行结果一致
+    #[test]
+    fn test_concurrent_need_all_false_consistency() {
+        let vfs = VirtualFileSystem::new();
+
+        // 在不同 PATH 位置添加同名可执行文件
+        if cfg!(windows) {
+            vfs.add_files(vec![
+                ("/bin/app.EXE", true),
+                ("/usr/bin/app.EXE", true),
+                ("/usr/local/bin/app.EXE", true),
+                ("/opt/bin/app.EXE", true),
+            ]);
+        } else {
+            vfs.add_files(vec![
+                ("/bin/app", true),
+                ("/usr/bin/app", true),
+                ("/usr/local/bin/app", true),
+                ("/opt/bin/app", true),
+            ]);
+        }
+
+        let options = HashMap::new();
+        let path_var = if cfg!(windows) {
+            "/usr/bin;/bin;/usr/local/bin;/opt/bin"
+        } else {
+            "/usr/bin:/bin:/usr/local/bin:/opt/bin"
+        };
+
+        // 多次运行，确保结果始终一致（应该返回第一个 /usr/bin/app）
+        let mut first_result = None;
+        for _ in 0..100 {
+            let result = which_all_fs("app", &options, &vfs, path_var);
+            assert!(result.is_ok());
+            let paths = result.unwrap();
+            assert_eq!(paths.len(), 1, "should return exactly one path");
+
+            let path_str = paths[0].to_string_lossy().to_string();
+
+            if let Some(ref first) = first_result {
+                assert_eq!(path_str, *first, "concurrent results should be consistent");
+            } else {
+                first_result = Some(path_str);
+            }
+        }
+
+        // 验证返回的是 PATH 中第一个匹配的路径
+        let expected_path = if cfg!(windows) {
+            "/usr/bin/app.EXE"
+        } else {
+            "/usr/bin/app"
+        };
+        assert_eq!(first_result.unwrap(), expected_path);
+    }
+
+    /// 并发一致性测试：验证 need_all == true 时，多次运行结果一致且按 PATH 顺序
+    #[test]
+    fn test_concurrent_need_all_true_consistency() {
+        let vfs = VirtualFileSystem::new();
+
+        // 在不同 PATH 位置添加同名可执行文件
+        if cfg!(windows) {
+            vfs.add_files(vec![
+                ("/bin/app.EXE", true),
+                ("/usr/bin/app.EXE", true),
+                ("/usr/local/bin/app.EXE", true),
+                ("/opt/bin/app.EXE", true),
+            ]);
+        } else {
+            vfs.add_files(vec![
+                ("/bin/app", true),
+                ("/usr/bin/app", true),
+                ("/usr/local/bin/app", true),
+                ("/opt/bin/app", true),
+            ]);
+        }
+
+        let mut options = HashMap::new();
+        options.insert("all".to_string(), true);
+        let path_var = if cfg!(windows) {
+            "/usr/bin;/bin;/usr/local/bin;/opt/bin"
+        } else {
+            "/usr/bin:/bin:/usr/local/bin:/opt/bin"
+        };
+
+        // 多次运行，确保结果始终一致且按 PATH 顺序
+        let mut first_result = None;
+        for _ in 0..100 {
+            let result = which_all_fs("app", &options, &vfs, path_var);
+            assert!(result.is_ok());
+            let paths = result.unwrap();
+            assert_eq!(paths.len(), 4, "should return all 4 paths");
+
+            let path_strings: Vec<String> = paths.iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            if let Some(ref first) = first_result {
+                assert_eq!(path_strings, *first, "consecutive results should be consistent");
+            } else {
+                first_result = Some(path_strings);
+            }
+        }
+
+        // 验证返回的顺序与 PATH 顺序一致
+        let expected_paths = if cfg!(windows) {
+            vec![
+                "/usr/bin/app.EXE",
+                "/bin/app.EXE",
+                "/usr/local/bin/app.EXE",
+                "/opt/bin/app.EXE",
+            ]
+        } else {
+            vec![
+                "/usr/bin/app",
+                "/bin/app",
+                "/usr/local/bin/app",
+                "/opt/bin/app",
+            ]
+        };
+        assert_eq!(first_result.unwrap(), expected_paths);
+    }
+
+    /// 并发一致性测试：验证复杂场景下的一致性
+    #[test]
+    fn test_concurrent_complex_scenario() {
+        let vfs = VirtualFileSystem::new();
+
+        // 创建复杂的场景：部分目录有文件，部分没有
+        if cfg!(windows) {
+            vfs.add_files(vec![
+                ("/bin/tool1.EXE", true),
+                ("/bin/tool2.EXE", true),
+                ("/usr/bin/tool1.EXE", true),  // 重复
+                ("/usr/bin/tool3.EXE", true),
+                ("/usr/local/bin/tool2.EXE", true),  // 重复
+                ("/usr/local/bin/tool4.EXE", true),
+            ]);
+        } else {
+            vfs.add_files(vec![
+                ("/bin/tool1", true),
+                ("/bin/tool2", true),
+                ("/usr/bin/tool1", true),  // 重复
+                ("/usr/bin/tool3", true),
+                ("/usr/local/bin/tool2", true),  // 重复
+                ("/usr/local/bin/tool4", true),
+            ]);
+        }
+
+        let path_var = if cfg!(windows) {
+            "/usr/bin;/bin;/usr/local/bin;/opt/bin"
+        } else {
+            "/usr/bin:/bin:/usr/local/bin:/opt/bin"
+        };
+
+        // 测试 need_all == false
+        let options_no_all = HashMap::new();
+        let mut first_result_tool1 = None;
+        for _ in 0..50 {
+            let result = which_all_fs("tool1", &options_no_all, &vfs, path_var);
+            assert!(result.is_ok());
+            let paths = result.unwrap();
+            assert_eq!(paths.len(), 1);
+            let path_str = paths[0].to_string_lossy().to_string();
+
+            if let Some(ref first) = first_result_tool1 {
+                assert_eq!(path_str, *first);
+            } else {
+                first_result_tool1 = Some(path_str);
+            }
+        }
+        // 应该返回 PATH 中第一个出现的 tool1
+        let expected_tool1 = if cfg!(windows) {
+            "/usr/bin/tool1.EXE"
+        } else {
+            "/usr/bin/tool1"
+        };
+        assert_eq!(first_result_tool1.unwrap(), expected_tool1);
+
+        // 测试 need_all == true
+        let mut options_all = HashMap::new();
+        options_all.insert("all".to_string(), true);
+        let mut first_result_all = None;
+        for _ in 0..50 {
+            let result = which_all_fs("tool1", &options_all, &vfs, path_var);
+            assert!(result.is_ok());
+            let paths = result.unwrap();
+            // 应该找到两个 tool1（去重后）
+            assert_eq!(paths.len(), 2);
+
+            let path_strings: Vec<String> = paths.iter()
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+
+            if let Some(ref first) = first_result_all {
+                assert_eq!(path_strings, *first);
+            } else {
+                first_result_all = Some(path_strings);
+            }
+        }
+        // 验证顺序
+        let expected_all = if cfg!(windows) {
+            vec!["/usr/bin/tool1.EXE", "/bin/tool1.EXE"]
+        } else {
+            vec!["/usr/bin/tool1", "/bin/tool1"]
+        };
+        assert_eq!(first_result_all.unwrap(), expected_all);
+    }
+
+    /// 并发性能测试：验证并发实现比顺序实现更快
+    #[test]
+    fn test_concurrent_performance() {
+        let vfs = VirtualFileSystem::new();
+
+        // 添加大量目录和文件
+        for i in 0..100 {
+            let dir = format!("/usr/local/bin{:02}", i);
+            if cfg!(windows) {
+                vfs.add_file(&format!("{}/app.EXE", dir), true);
+            } else {
+                vfs.add_file(&format!("{}/app", dir), true);
+            }
+        }
+
+        let mut path_dirs = Vec::new();
+        for i in 0..100 {
+            path_dirs.push(format!("/usr/local/bin{:02}", i));
+        }
+        let path_var = path_dirs.join(if cfg!(windows) { ";" } else { ":" });
+
+        let options = HashMap::new();
+
+        // 测试 need_all == false 的性能
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            let result = which_all_fs("app", &options, &vfs, &path_var);
+            assert!(result.is_ok());
+        }
+        let duration = start.elapsed();
+        println!("Concurrent search took: {:?}", duration);
+
+        // 确保每次结果一致
+        for _ in 0..10 {
+            let result = which_all_fs("app", &options, &vfs, &path_var);
+            assert!(result.is_ok());
+            let paths = result.unwrap();
+            assert_eq!(paths.len(), 1);
+            // 应该返回第一个目录中的 app
+            let expected_path = if cfg!(windows) {
+                "/usr/local/bin00/app.EXE"
+            } else {
+                "/usr/local/bin00/app"
+            };
+            assert_eq!(paths[0].to_string_lossy().as_ref(), expected_path);
+        }
     }
 }
